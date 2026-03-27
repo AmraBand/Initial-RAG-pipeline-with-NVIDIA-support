@@ -1,0 +1,2 @@
+{"query":"What are the key goals of the RAG pipeline in this project?","expected_answer":"Ingest a KB, build searchable embeddings/index, retrieve relevant chunks, and generate grounded answers with citations.","expected_sources":["kb/sample_kb.md"]}
+{"query":"What retrieval strategies are supported?","expected_answer":"Vector retrieval and hybrid retrieval (BM25 + vector with reciprocal rank fusion).","expected_sources":["kb/sample_kb.md"]}
