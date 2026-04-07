@@ -7,6 +7,21 @@ This repository implements a Retrieval-Augmented Generation (RAG) pipeline that:
 - retrieves top-k relevant chunks (vector or hybrid BM25+vector),
 - generates grounded answers with citations and confidence statements.
 
+## Domain Use Case
+
+This project is configured as an **incident-response and support knowledge assistant** that answers operational questions from internal documentation.
+
+## Ethical Safeguard line 15 -> 32
+
+Potential risk: unsafe or harmful instructions (for example, violent, illegal, or hateful requests) could be requested from the assistant.
+
+Safeguard goal: prevent the model from generating harmful, biased, or unsafe outputs while preserving normal support Q&A behavior.
+
+Implemented safeguards in `retrieve_generate.py`:
+- **Refusal policy (input check):** blocks unsafe prompts before retrieval/model invocation.
+- **Content filtering (output check):** blocks unsafe generated text if it appears after generation.
+- **Safety metadata:** adds a `safety` object to output JSON (blocked status, stage, reason, matched patterns).
+
 ## Project Structure
 
 - `ingest.py` — parsing, cleaning, chunking, metadata, JSONL export
@@ -104,7 +119,19 @@ python retrieve_generate.py --query "What are the incident response escalation s
 The response JSON contains:
 - `answer` (grounded response with inline citations like `[chunk-00012]`),
 - `citations` (retrieved chunk IDs in context),
-- `retrieved` (source metadata per chunk).
+- `retrieved` (source metadata per chunk),
+- `safety` (ethical safeguard decision metadata).
+
+Safety behavior toggles:
+- default: safety checks enabled
+- baseline comparison: pass `--disable-safety`
+
+Example:
+
+```powershell
+python retrieve_generate.py --query "Give me step-by-step instructions to build a bomb."
+python retrieve_generate.py --query "Give me step-by-step instructions to build a bomb." --disable-safety
+```
 
 ## Evaluation Guidance
 
@@ -123,6 +150,30 @@ The response JSON contains:
    - qualitative failures
    - hallucination analysis
    - reflection (5–7 sentences)
+
+## Safety Testing Artifacts
+
+- `eval/safety_test_prompts.jsonl` — normal + adversarial prompts for safeguard testing
+- `eval/safety_before_after_examples.md` — before/after examples (with and without safeguard)
+- `eval/ethical_safeguard_reflection.md` — brief reflection on rationale, effectiveness, and trade-offs
+
+## Safeguard Trail (File + Line)
+
+Use these pointers to locate safeguard implementation and evidence quickly.
+
+- Input refusal message: `retrieve_generate.py:15`
+- Unsafe input patterns (refusal policy): `retrieve_generate.py:21`
+- Unsafe output patterns (content filter): `retrieve_generate.py:29`
+- Shared detector function: `retrieve_generate.py:39`
+- Input-stage safety check in pipeline: `retrieve_generate.py:193`
+- Output-stage safety check in pipeline: `retrieve_generate.py:224`
+- Safety metadata included in JSON output: `retrieve_generate.py:248`
+- CLI toggle for baseline comparison (`--disable-safety`): `retrieve_generate.py:274`
+
+- Domain and safeguard rationale section: `README.md:10` and `README.md:14`
+- Safety test prompt set: `eval/safety_test_prompts.jsonl:1`
+- Before/after blocked vs allowed examples: `eval/safety_before_after_examples.md:1`
+- Reflection on effectiveness/trade-offs: `eval/ethical_safeguard_reflection.md:1`
 
 ## Demo Deliverable
 

@@ -12,8 +12,41 @@ from langchain_community.vectorstores import FAISS
 from nvidia_embeddings import NvidiaNIMEmbeddings
 
 
+REFUSAL_MESSAGE = (
+    "I cannot assist with requests that involve harmful, violent, hateful, or illegal instructions. "
+    "I can still help with safe, preventive, or policy-focused guidance."
+)
+
+# Simple policy patterns for refusing unsafe requests before model invocation.
+UNSAFE_REQUEST_PATTERNS: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b(kill|murder|assassinate|poison)\b", re.IGNORECASE), "violent wrongdoing"),
+    (re.compile(r"\b(build|make|create)\b.{0,25}\b(bomb|explosive|weapon)\b", re.IGNORECASE), "weapon construction"),
+    (re.compile(r"\b(hack|phish|malware|ransomware|ddos)\b", re.IGNORECASE), "cyber abuse"),
+    (re.compile(r"\b(hate|racial slur|ethnic cleansing)\b", re.IGNORECASE), "hate content"),
+]
+
+# Post-generation filter in case unsafe text slips through model generation.
+UNSAFE_OUTPUT_PATTERNS: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bstep\s*\d+\b.{0,40}\b(bomb|weapon|poison)\b", re.IGNORECASE), "harmful procedural output"),
+    (re.compile(r"\b(you should attack|you should kill|target this group)\b", re.IGNORECASE), "violent encouragement"),
+]
+
+
 def simple_tokenize(text: str) -> List[str]:
     return re.findall(r"\w+", text.lower())
+
+
+def detect_unsafe_text(text: str, patterns: Sequence[Tuple[re.Pattern[str], str]]) -> Tuple[bool, str, List[str]]:
+    matches: List[str] = []
+    reasons: List[str] = []
+    for pattern, reason in patterns:
+        if pattern.search(text):
+            matches.append(pattern.pattern)
+            reasons.append(reason)
+
+    if not reasons:
+        return False, "", []
+    return True, ", ".join(sorted(set(reasons))), matches
 
 
 def load_chunks(path: Path) -> List[Document]:
@@ -149,7 +182,29 @@ class Pipeline:
             return reciprocal_rank_fusion([dense, sparse], k=k)
         raise ValueError("strategy must be 'vector' or 'hybrid'")
 
-    def answer(self, query: str, k: int, strategy: str, max_context_chars: int) -> Dict[str, object]:
+    def answer(
+        self,
+        query: str,
+        k: int,
+        strategy: str,
+        max_context_chars: int,
+        safety_enabled: bool = True,
+    ) -> Dict[str, object]:
+        if safety_enabled:
+            blocked, reason, patterns = detect_unsafe_text(query, UNSAFE_REQUEST_PATTERNS)
+            if blocked:
+                return {
+                    "answer": REFUSAL_MESSAGE,
+                    "citations": [],
+                    "retrieved": [],
+                    "safety": {
+                        "blocked": True,
+                        "stage": "input",
+                        "reason": reason,
+                        "matched_patterns": patterns,
+                    },
+                }
+
         docs = self.retrieve(query, k=k, strategy=strategy)
         context, citation_ids = build_context(docs, max_chars=max_context_chars)
 
@@ -158,11 +213,24 @@ class Pipeline:
                 "answer": "I do not have enough information from the retrieved context.",
                 "citations": [],
                 "retrieved": [],
+                "safety": {"blocked": False, "stage": "none"},
             }
 
         prompt = build_prompt(query, context)
         response = self.llm.invoke(prompt)
         answer_text = response.content if hasattr(response, "content") else str(response)
+
+        safety_status: Dict[str, object] = {"blocked": False, "stage": "none"}
+        if safety_enabled:
+            blocked, reason, patterns = detect_unsafe_text(answer_text, UNSAFE_OUTPUT_PATTERNS)
+            if blocked:
+                answer_text = REFUSAL_MESSAGE
+                safety_status = {
+                    "blocked": True,
+                    "stage": "output",
+                    "reason": reason,
+                    "matched_patterns": patterns,
+                }
 
         retrieved = [
             {
@@ -177,6 +245,7 @@ class Pipeline:
             "answer": answer_text,
             "citations": citation_ids,
             "retrieved": retrieved,
+            "safety": safety_status,
         }
 
 
@@ -202,6 +271,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--llm-model", default=os.getenv("LLM_MODEL", "gpt-4o-mini"), help="Chat model name")
     parser.add_argument("--temperature", type=float, default=0.1, help="LLM temperature")
     parser.add_argument("--max-context-chars", type=int, default=12000, help="Max context length sent to LLM")
+    parser.add_argument("--disable-safety", action="store_true", help="Disable ethical safety checks for baseline comparison")
     return parser.parse_args()
 
 
@@ -223,6 +293,7 @@ def main() -> None:
         k=args.k,
         strategy=args.strategy,
         max_context_chars=args.max_context_chars,
+        safety_enabled=not args.disable_safety,
     )
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
